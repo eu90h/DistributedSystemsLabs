@@ -1,10 +1,11 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,47 +25,74 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func ReduceKeyValue(kv *KeyValue) {
+	ok := call("Coordinator.HandleReduceKeyValue", kv, &EmptyReply{})
+	if !ok {
+		log.Fatal("ReduceKeyValue was not OK!")
+	}
+}
+
+func CompleteMapTask(mapTask *Task, kvs []KeyValue) {
+	if mapTask == nil {
+		log.Fatal("mapTask was nil!")
+	}
+
+	log.Printf("task %s completed\n", mapTask.TaskID)
+
+	completionResponse := CompletedWorkResponse{}
+	completionResponse.Kvs = kvs
+	completionResponse.CompletedTaskID = mapTask.TaskID
+
+	ok := call("Coordinator.HandleMapTaskCompletion", &completionResponse, &EmptyReply{})
+	if !ok {
+		log.Fatal("FinishWorkAssignment was not OK!")
+	}
+}
+
+func RequestWorkAssignment() *Task {
+	response := Task{}
+
+	ok := call("Coordinator.HandleWorkAssignmentRequest", &EmptyArgs{}, &response)
+	if !ok {
+		return nil
+	}
+
+	return &response
+}
 
 //
 // main/mrworker.go calls this function.
 //
-func Worker(mapf func(string, string) []KeyValue,
-	reducef func(string, []string) string) {
-
-	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
+func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+	for {
+		task := RequestWorkAssignment()
+		if task == nil {
+			log.Fatalln("null mapTask!")
+		}
+	
+		switch task.TaskType {
+		case TaskTypeMap:
+			log.Printf("mapping on %s\n", task.TaskID)
+			HandleMapTask(task, mapf)
+			break
+		case TaskTypeReduce:
+			log.Printf("reducing on %s\n", task.TaskID)
+			HandleReduceTask(task, reducef)
+			break
+		}
+	}
 }
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+func HandleMapTask(task *Task, mapf func(string, string) []KeyValue) {
+	task.State = TaskStateInProgress
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	kv := mapf(task.TaskID, string(task.Data))
 
-	// fill in the argument(s).
-	args.X = 99
+	CompleteMapTask(task, kv)
+}
 
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
+func HandleReduceTask(task *Task, reducef func(string, []string) string) {
+	
 }
 
 //
@@ -75,6 +103,7 @@ func CallExample() {
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
+	fmt.Println(sockname)
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
 		log.Fatal("dialing:", err)
